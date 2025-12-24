@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>Camp Planner 3D v0.1</title>
+  <title>Camp Planner 3D v0.2</title>
   <style>
     :root{
       color-scheme: dark;
@@ -46,10 +46,10 @@
       white-space:nowrap;padding:10px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
       background:rgba(255,255,255,.06);cursor:pointer;
     }
-    .sidebar{right:12px;top:64px;width:min(340px,calc(100% - 24px));z-index:10}
+    .sidebar{right:12px;top:64px;width:min(360px,calc(100% - 24px));z-index:10}
     .row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:10px 0}
     label{color:var(--muted);font-size:12px}
-    input[type="range"]{width:170px}
+    input[type="range"]{width:190px}
     .badge{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}
     .badge.ok{border-color:rgba(120,255,160,.35)}
     .badge.warn{border-color:rgba(255,204,102,.45)}
@@ -149,7 +149,7 @@
   const clear = (node)=>{ while(node.firstChild) node.removeChild(node.firstChild); };
   const fmtDate = (ts)=> new Date(ts).toLocaleString();
 
-  // ---------- catalogs (IMPORTANT FIX: load without creating planner) ----------
+  // ---------- catalogs ----------
   const catalogs = { loaded:false, gear:null, sites:null };
   async function loadCatalogsIfNeeded(){
     if (catalogs.loaded) return catalogs;
@@ -188,11 +188,12 @@
       this.instances=[];
       this.selected=null;
 
-      this.scene.add(new THREE.Mesh(
+      const ground = new THREE.Mesh(
         new THREE.PlaneGeometry(200,200),
         new THREE.MeshStandardMaterial({color:0x141a22, roughness:1, metalness:0})
-      ));
-      this.scene.children[this.scene.children.length-1].rotation.x=-Math.PI/2;
+      );
+      ground.rotation.x=-Math.PI/2;
+      this.scene.add(ground);
 
       this.scene.add(new THREE.HemisphereLight(0xbfd6ff, 0x111a22, 1.1));
       const dir=new THREE.DirectionalLight(0xffffff, 0.6);
@@ -203,7 +204,7 @@
 
       this.fireRings=new Map();
 
-      this.drag={active:false, offset:new THREE.Vector3(), plane:new THREE.Plane(new THREE.Vector3(0,1,0),0)};
+      this.dragPlane = new THREE.Plane(new THREE.Vector3(0,1,0),0);
       this._orbitTarget=new THREE.Vector3(1,0,1);
 
       this._bindEvents();
@@ -273,6 +274,13 @@
         if (!def) continue;
         const inst=this._spawn(def, gi.pos.x, gi.pos.z, gi.yaw);
         inst.instanceId = gi.instanceId || uid();
+        // restore custom size if present
+        if (gi.size && typeof gi.size.w==="number" && typeof gi.size.d==="number"){
+          inst.size.w = gi.size.w;
+          inst.size.d = gi.size.d;
+          if (typeof gi.size.h==="number") inst.size.h = gi.size.h;
+          this._applySize(inst);
+        }
       }
       this._revalidateAll();
       this._renderSidebar();
@@ -288,7 +296,8 @@
           instanceId: inst.instanceId,
           definitionId: inst.def.id,
           pos: {x: inst.mesh.position.x, y:0, z: inst.mesh.position.z},
-          yaw: inst.yawDeg
+          yaw: inst.yawDeg,
+          size: inst.size ? { w: inst.size.w, d: inst.size.d, h: inst.size.h } : undefined
         }))
       };
     }
@@ -301,6 +310,17 @@
       return ring;
     }
 
+    _applySize(inst){
+      const { w,d,h } = inst.size;
+      const g = new THREE.BoxGeometry(w, h, d);
+      inst.mesh.geometry.dispose();
+      inst.mesh.geometry = g;
+      inst.mesh.position.y = h/2;
+
+      const ring = this.fireRings.get(inst.instanceId);
+      if (ring) ring.position.set(inst.mesh.position.x, 0.02, inst.mesh.position.z);
+    }
+
     _spawn(def, x=1, z=1, yawDeg=0){
       const vis=def.visual;
       const geom=new THREE.BoxGeometry(vis.w, vis.h, vis.d);
@@ -310,7 +330,13 @@
       mesh.rotation.y=degToRad(yawDeg);
       this.scene.add(mesh);
 
-      const inst={instanceId: uid(), def, mesh, yawDeg};
+      const inst={
+        instanceId: uid(),
+        def,
+        mesh,
+        yawDeg,
+        size: { w: vis.w, d: vis.d, h: vis.h } // ★カスタムサイズ
+      };
       this.instances.push(inst);
 
       if (def.category==="fire" && typeof def.fireRadius==="number"){
@@ -368,7 +394,8 @@
         const chip=el("button",{class:"chip"},[g.name]);
         chip.addEventListener("click", ()=>{
           const c=this._orbitTarget || new THREE.Vector3(1,0,1);
-          this._spawn(g, c.x+0.5, c.z+0.5, 0);
+          const jitter = (Math.random() - 0.5) * 1.2;
+          this._spawn(g, c.x + 0.8 + jitter, c.z + 0.8 - jitter, 0);
         });
         this.dock.appendChild(chip);
       }
@@ -398,16 +425,22 @@
       s.appendChild(row);
 
       if (!this.selected){
-        s.appendChild(el("div",{class:"small", style:"margin-top:10px;"},["Tap a box to select. Drag to move. Rotate slider on right panel."]));
+        s.appendChild(el("div",{class:"small", style:"margin-top:10px;"},[
+          "1本指：物体ドラッグ / 空白ドラッグで回転",
+          el("br"),
+          "2本指：パン / ピンチズーム"
+        ]));
         return;
       }
 
       const sel=this.selected;
+
       const selRow=el("div",{class:"row"},[]);
       selRow.appendChild(el("div",{html:`<div style="font-weight:600;">${sel.def.name}</div><div class="small">${sel.def.id}</div>`}));
       selRow.appendChild(el("button",{class:"btn", onclick:()=>this._deleteSelected()},["Delete"]));
       s.appendChild(selRow);
 
+      // rotate
       const rRow=el("div",{class:"row"},[]);
       rRow.appendChild(el("label",{},["Rotate"]));
       const range=el("input",{type:"range", min:"0", max:"359", value:String(sel.yawDeg)});
@@ -421,6 +454,44 @@
       rRow.appendChild(range);
       s.appendChild(rRow);
 
+      // size controls
+      s.appendChild(el("div",{class:"small", style:"margin-top:10px;"},["Size (m)"]));
+
+      const mkRange = (labelText, min, max, step, value, onInput)=>{
+        const row = el("div", { class:"row" }, []);
+        row.appendChild(el("label", {}, [labelText]));
+        const r = el("input", { type:"range", min:String(min), max:String(max), step:String(step), value:String(value) });
+        r.addEventListener("input", ()=> onInput(Number(r.value)));
+        row.appendChild(r);
+        return row;
+      };
+
+      s.appendChild(mkRange("Width", 0.3, 10.0, 0.1, sel.size.w, (v)=>{
+        sel.size.w = v;
+        this._applySize(sel);
+        this._revalidateAll();
+        this._renderSidebar();
+      }));
+
+      s.appendChild(mkRange("Depth", 0.3, 10.0, 0.1, sel.size.d, (v)=>{
+        sel.size.d = v;
+        this._applySize(sel);
+        this._revalidateAll();
+        this._renderSidebar();
+      }));
+
+      const resetRow = el("div", { class:"row" }, []);
+      resetRow.appendChild(el("div", { class:"small" }, ["Default"]));
+      resetRow.appendChild(el("button", { class:"btn", onclick:()=>{
+        const vis = sel.def.visual;
+        sel.size = { w: vis.w, d: vis.d, h: vis.h };
+        this._applySize(sel);
+        this._revalidateAll();
+        this._renderSidebar();
+      }}, ["Reset size"]));
+      s.appendChild(resetRow);
+
+      // issues list
       const issues=this._issuesForInstance(sel.instanceId);
       for (const it of issues){
         s.appendChild(el("div",{class: it.level==="err" ? "errLine":"warnLine"},[(it.level==="err"?"✖ ":"⚠ ")+it.message]));
@@ -435,12 +506,15 @@
       const sitePoly=this.site?.polygon||[];
 
       const rects=this.instances.map(inst=>{
-        const vis=inst.def.visual;
-        let w=vis.w, d=vis.d;
+        const base = inst.size || inst.def.visual;
+        let w = base.w, d = base.d;
+
+        // v0.2: tents include guyline clearance as collision envelope (still strict)
         if (inst.def.category==="tent" && inst.def.clearance?.[0]?.shape==="rect"){
-          w=Math.max(w, inst.def.clearance[0].w);
-          d=Math.max(d, inst.def.clearance[0].d);
+          w = Math.max(w, inst.def.clearance[0].w);
+          d = Math.max(d, inst.def.clearance[0].d);
         }
+
         const corners=obbCorners2D(inst.mesh.position.x, inst.mesh.position.z, w/2, d/2, degToRad(inst.yawDeg));
         return {inst, corners};
       });
@@ -489,80 +563,214 @@
     }
 
     _bindEvents(){
-      const getPointer = (ev)=>{
-        const rect=this.canvas.getBoundingClientRect();
-        const p = ev.touches?.[0] || ev;
-        this.pointer.x = ((p.clientX-rect.left)/rect.width)*2 - 1;
-        this.pointer.y = -(((p.clientY-rect.top)/rect.height)*2 - 1);
+      const rectOf = ()=> this.canvas.getBoundingClientRect();
+
+      const setPointerFromClient = (clientX, clientY)=>{
+        const rect = rectOf();
+        this.pointer.x = ((clientX-rect.left)/rect.width)*2 - 1;
+        this.pointer.y = -(((clientY-rect.top)/rect.height)*2 - 1);
       };
-      const pick = (ev)=>{
-        getPointer(ev);
+
+      const pickAt = (clientX, clientY)=>{
+        setPointerFromClient(clientX, clientY);
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        const hits=this.raycaster.intersectObjects(this.instances.map(i=>i.mesh), false);
+        const hits = this.raycaster.intersectObjects(this.instances.map(i=>i.mesh), false);
         return hits.length ? (this.instances.find(i=>i.mesh===hits[0].object) || null) : null;
       };
-      const intersectGround = (ev)=>{
-        getPointer(ev);
+
+      const groundHitAt = (clientX, clientY)=>{
+        setPointerFromClient(clientX, clientY);
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        const hit=new THREE.Vector3();
-        this.raycaster.ray.intersectPlane(this.drag.plane, hit);
+        const hit = new THREE.Vector3();
+        this.raycaster.ray.intersectPlane(this.dragPlane, hit);
         return hit;
       };
 
-      const onDown = (ev)=>{
-        ev.preventDefault?.();
-        const inst=pick(ev);
-        if (inst){
-          this._select(inst);
-          const hit=intersectGround(ev);
-          this.drag.active=true;
-          this.drag.offset.copy(inst.mesh.position).sub(hit);
-          this._renderSidebar();
-        } else {
-          const p = ev.touches?.[0] || ev;
-          this._orbitDrag={active:true, x:p.clientX, y:p.clientY};
-        }
-      };
-      const onMove = (ev)=>{
-        if (this.drag.active && this.selected){
-          ev.preventDefault?.();
-          const hit=intersectGround(ev);
-          const pos=hit.add(this.drag.offset);
-          this.selected.mesh.position.x=pos.x;
-          this.selected.mesh.position.z=pos.z;
-          const ring=this.fireRings.get(this.selected.instanceId);
-          if (ring) ring.position.set(pos.x,0.02,pos.z);
-          this._revalidateAll(); this._renderSidebar();
-          return;
-        }
-        if (this._orbitDrag?.active){
-          const p = ev.touches?.[0] || ev;
-          const dx=(p.clientX-this._orbitDrag.x)*0.01;
-          const dy=(p.clientY-this._orbitDrag.y)*0.01;
-          this._orbitDrag.x=p.clientX; this._orbitDrag.y=p.clientY;
-
-          const target=this._orbitTarget || new THREE.Vector3(0,0,0);
-          const offset=this.camera.position.clone().sub(target);
-          const sph=new THREE.Spherical().setFromVector3(offset);
-          sph.theta -= dx;
-          sph.phi = Math.min(Math.max(0.2, sph.phi + dy), 1.45);
-          offset.setFromSpherical(sph);
-          this.camera.position.copy(target.clone().add(offset));
+      const clampCameraDistance = ()=>{
+        const target = this._orbitTarget || new THREE.Vector3(0,0,0);
+        const dir = this.camera.position.clone().sub(target);
+        const l = dir.length();
+        const nl = Math.min(Math.max(4, l), 40);
+        if (Math.abs(nl - l) > 1e-6){
+          dir.setLength(nl);
+          this.camera.position.copy(target.clone().add(dir));
           this.camera.lookAt(target);
         }
       };
-      const onUp = ()=>{
-        this.drag.active=false;
-        if (this._orbitDrag) this._orbitDrag.active=false;
+
+      const gs = {
+        mode: null, // "drag" | "orbit" | "panzoom"
+        dragOffset: new THREE.Vector3(),
+        orbitLast: {x:0,y:0},
+        lastMid: {x:0,y:0},
+        lastDist: 0
       };
 
-      this.canvas.addEventListener("mousedown", onDown, {passive:false});
-      this.canvas.addEventListener("mousemove", onMove, {passive:false});
-      addEventListener("mouseup", onUp, {passive:true});
+      const startOrbit = (x,y)=>{
+        gs.mode = "orbit";
+        gs.orbitLast.x = x; gs.orbitLast.y = y;
+      };
 
-      this.canvas.addEventListener("touchstart", onDown, {passive:false});
-      this.canvas.addEventListener("touchmove", onMove, {passive:false});
-      addEventListener("touchend", onUp, {passive:true});
+      const moveOrbit = (x,y)=>{
+        const dx = (x - gs.orbitLast.x) * 0.01;
+        const dy = (y - gs.orbitLast.y) * 0.01;
+        gs.orbitLast.x = x; gs.orbitLast.y = y;
+
+        const target = this._orbitTarget || new THREE.Vector3(0,0,0);
+        const offset = this.camera.position.clone().sub(target);
+        const sph = new THREE.Spherical().setFromVector3(offset);
+
+        sph.theta -= dx;
+        sph.phi = Math.min(Math.max(0.2, sph.phi + dy), 1.45);
+
+        offset.setFromSpherical(sph);
+        this.camera.position.copy(target.clone().add(offset));
+        this.camera.lookAt(target);
+      };
+
+      const startDrag = (inst, x, y)=>{
+        gs.mode = "drag";
+        this._select(inst);
+        const hit = groundHitAt(x,y);
+        gs.dragOffset.copy(inst.mesh.position).sub(hit);
+        this._renderSidebar();
+      };
+
+      const moveDrag = (x,y)=>{
+        if (!this.selected) return;
+        const hit = groundHitAt(x,y);
+        const pos = hit.add(gs.dragOffset);
+        this.selected.mesh.position.x = pos.x;
+        this.selected.mesh.position.z = pos.z;
+
+        const ring = this.fireRings.get(this.selected.instanceId);
+        if (ring) ring.position.set(pos.x, 0.02, pos.z);
+
+        this._revalidateAll();
+        this._renderSidebar();
+      };
+
+      const startPanZoom = (t1, t2)=>{
+        gs.mode = "panzoom";
+        const midX = (t1.clientX + t2.clientX) / 2;
+        const midY = (t1.clientY + t2.clientY) / 2;
+        gs.lastMid.x = midX; gs.lastMid.y = midY;
+        gs.lastDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      };
+
+      const movePanZoom = (t1, t2)=>{
+        const midX = (t1.clientX + t2.clientX) / 2;
+        const midY = (t1.clientY + t2.clientY) / 2;
+        const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+        // PAN
+        const dx = midX - gs.lastMid.x;
+        const dy = midY - gs.lastMid.y;
+        gs.lastMid.x = midX; gs.lastMid.y = midY;
+
+        const forward = new THREE.Vector3();
+        this.camera.getWorldDirection(forward);
+        forward.y = 0; forward.normalize();
+
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+
+        const target = this._orbitTarget || new THREE.Vector3(0,0,0);
+        const camDist = this.camera.position.distanceTo(target);
+        const panScale = camDist * 0.0015;
+
+        const pan = new THREE.Vector3()
+          .addScaledVector(right, -dx * panScale)
+          .addScaledVector(forward, dy * panScale);
+
+        this._orbitTarget = target.clone().add(pan);
+        this.camera.position.add(pan);
+        this.camera.lookAt(this._orbitTarget);
+
+        // ZOOM
+        const zoomFactor = gs.lastDist / (dist + 1e-6);
+        gs.lastDist = dist;
+
+        const dir = this.camera.position.clone().sub(this._orbitTarget);
+        const newLen = Math.min(Math.max(4, dir.length() * zoomFactor), 40);
+        dir.setLength(newLen);
+        this.camera.position.copy(this._orbitTarget.clone().add(dir));
+        this.camera.lookAt(this._orbitTarget);
+
+        clampCameraDistance();
+      };
+
+      const endGesture = ()=>{ gs.mode = null; };
+
+      // Mouse
+      const onMouseDown = (ev)=>{
+        ev.preventDefault();
+        const inst = pickAt(ev.clientX, ev.clientY);
+        if (inst) startDrag(inst, ev.clientX, ev.clientY);
+        else startOrbit(ev.clientX, ev.clientY);
+      };
+      const onMouseMove = (ev)=>{
+        if (gs.mode === "drag") moveDrag(ev.clientX, ev.clientY);
+        else if (gs.mode === "orbit") moveOrbit(ev.clientX, ev.clientY);
+      };
+      const onMouseUp = ()=> endGesture();
+      const onWheel = (ev)=>{
+        ev.preventDefault();
+        const target = this._orbitTarget || new THREE.Vector3(0,0,0);
+        const dir = this.camera.position.clone().sub(target);
+        const l = dir.length();
+        const nl = Math.min(Math.max(4, l + ev.deltaY*0.01), 40);
+        dir.setLength(nl);
+        this.camera.position.copy(target.clone().add(dir));
+        this.camera.lookAt(target);
+      };
+
+      // Touch
+      const onTouchStart = (ev)=>{
+        ev.preventDefault();
+        if (ev.touches.length === 1){
+          const t = ev.touches[0];
+          const inst = pickAt(t.clientX, t.clientY);
+          if (inst) startDrag(inst, t.clientX, t.clientY);
+          else startOrbit(t.clientX, t.clientY);
+          return;
+        }
+        if (ev.touches.length === 2){
+          startPanZoom(ev.touches[0], ev.touches[1]);
+          return;
+        }
+      };
+
+      const onTouchMove = (ev)=>{
+        ev.preventDefault();
+        if (ev.touches.length === 1){
+          const t = ev.touches[0];
+          if (gs.mode === "drag") moveDrag(t.clientX, t.clientY);
+          else if (gs.mode === "orbit") moveOrbit(t.clientX, t.clientY);
+          return;
+        }
+        if (ev.touches.length === 2){
+          movePanZoom(ev.touches[0], ev.touches[1]);
+          return;
+        }
+      };
+
+      const onTouchEnd = (ev)=>{
+        if (ev.touches.length === 0) endGesture();
+        if (ev.touches.length === 1){
+          const t = ev.touches[0];
+          startOrbit(t.clientX, t.clientY);
+        }
+      };
+
+      this.canvas.addEventListener("mousedown", onMouseDown, {passive:false});
+      this.canvas.addEventListener("mousemove", onMouseMove, {passive:false});
+      addEventListener("mouseup", onMouseUp, {passive:true});
+      this.canvas.addEventListener("wheel", onWheel, {passive:false});
+
+      this.canvas.addEventListener("touchstart", onTouchStart, {passive:false});
+      this.canvas.addEventListener("touchmove", onTouchMove, {passive:false});
+      this.canvas.addEventListener("touchend", onTouchEnd, {passive:false});
+      this.canvas.addEventListener("touchcancel", onTouchEnd, {passive:false});
     }
 
     _resize(){
@@ -592,7 +800,6 @@
     const dock=el("div",{class:"dock"},[]);
     appRoot.append(canvasWrap, topbar, sidebar, dock);
 
-    // Always create planner when entering editor (simple and reliable)
     state.planner = new PlannerApp({
       canvas: document.getElementById("canvas"),
       sidebar, dock, gear, sites
@@ -611,7 +818,6 @@
       }},["Save"])
     );
 
-    // load context
     if (state.currentSaveId){
       const save=getSave(state.currentSaveId);
       if (save) state.planner.loadFromSave(save);
@@ -628,7 +834,7 @@
 
     clear(appRoot);
     const topbar=el("div",{class:"topbar"},[
-      el("div",{class:"small", html:"<b>Camp Planner 3D</b> · v0.1 (no build, GitHub Pages friendly)"})
+      el("div",{class:"small", html:"<b>Camp Planner 3D</b> · v0.2 (touch pan/pinch + resize)"})
     ]);
     const panel=el("div",{class:"panel siteList"},[
       el("div",{style:"font-weight:700; font-size:16px;"},["Select a Site"])
@@ -658,7 +864,7 @@
     ]);
     const panel=el("div",{class:"panel savesList"},[
       el("div",{style:"font-weight:700; font-size:16px;"},["Saved Plans"]),
-      el("div",{class:"small"},["Stored per-device in localStorage (v0.1)."])
+      el("div",{class:"small"},["Stored per-device in localStorage (v0.2)."])
     ]);
 
     const all=loadAllSaves();
