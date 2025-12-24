@@ -1,0 +1,68 @@
+[
+  {
+    "id": "tent_2p",
+    "name": "Tent 2P",
+    "category": "tent",
+    "visual": { "type": "box", "w": 2.1, "d": 1.2, "h": 1.1 },
+    "collision": [{ "type": "box", "w": 2.1, "d": 1.2, "h": 1.1, "x": 0, "y": 0.55, "z": 0, "yaw": 0 }],
+    "clearance": [{ "type": "guyline", "shape": "rect", "w": 3.5, "d": 2.8 }]
+  },
+  {
+    "id": "tent_4p",
+    "name": "Tent 4P",
+    "category": "tent",
+    "visual": { "type": "box", "w": 3.0, "d": 2.5, "h": 1.3 },
+    "collision": [{ "type": "box", "w": 3.0, "d": 2.5, "h": 1.3, "x": 0, "y": 0.65, "z": 0, "yaw": 0 }],
+    "clearance": [{ "type": "guyline", "shape": "rect", "w": 5.0, "d": 4.2 }]
+  },
+  {
+    "id": "car_compact",
+    "name": "Car (Compact)",
+    "category": "vehicle",
+    "visual": { "type": "box", "w": 4.0, "d": 1.8, "h": 1.6 },
+    "collision": [{ "type": "box", "w": 4.0, "d": 1.8, "h": 1.6, "x": 0, "y": 0.8, "z": 0, "yaw": 0 }]
+  },
+  {
+    "id": "car_minivan",
+    "name": "Car (Minivan)",
+    "category": "vehicle",
+    "visual": { "type": "box", "w": 4.8, "d": 1.9, "h": 1.8 },
+    "collision": [{ "type": "box", "w": 4.8, "d": 1.9, "h": 1.8, "x": 0, "y": 0.9, "z": 0, "yaw": 0 }]
+  },
+  {
+    "id": "firepit",
+    "name": "Fire Pit",
+    "category": "fire",
+    "visual": { "type": "box", "w": 0.6, "d": 0.6, "h": 0.4 },
+    "collision": [{ "type": "box", "w": 0.6, "d": 0.6, "h": 0.4, "x": 0, "y": 0.2, "z": 0, "yaw": 0 }],
+    "fireRadius": 1.5
+  },
+  {
+    "id": "tarp_m",
+    "name": "Tarp M",
+    "category": "tarp",
+    "visual": { "type": "box", "w": 3.0, "d": 3.0, "h": 0.2 },
+    "collision": [{ "type": "box", "w": 3.0, "d": 3.0, "h": 0.2, "x": 0, "y": 1.8, "z": 0, "yaw": 0 }]
+  },
+  {
+    "id": "tarp_l",
+    "name": "Tarp L",
+    "category": "tarp",
+    "visual": { "type": "box", "w": 4.0, "d": 4.0, "h": 0.2 },
+    "collision": [{ "type": "box", "w": 4.0, "d": 4.0, "h": 0.2, "x": 0, "y": 2.0, "z": 0, "yaw": 0 }]
+  },
+  {
+    "id": "table",
+    "name": "Table",
+    "category": "furniture",
+    "visual": { "type": "box", "w": 1.2, "d": 0.6, "h": 0.75 },
+    "collision": [{ "type": "box", "w": 1.2, "d": 0.6, "h": 0.75, "x": 0, "y": 0.375, "z": 0, "yaw": 0 }]
+  },
+  {
+    "id": "chair",
+    "name": "Chair",
+    "category": "furniture",
+    "visual": { "type": "box", "w": 0.55, "d": 0.55, "h": 0.9 },
+    "collision": [{ "type": "box", "w": 0.55, "d": 0.55, "h": 0.9, "x": 0, "y": 0.45, "z": 0, "yaw": 0 }]
+  }
+]

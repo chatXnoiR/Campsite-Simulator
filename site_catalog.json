@@ -1,0 +1,6 @@
+[
+  { "id": "rect_6x6", "name": "Rect 6m x 6m", "polygon": [[0,0],[6,0],[6,6],[0,6]] },
+  { "id": "rect_8x8", "name": "Rect 8m x 8m", "polygon": [[0,0],[8,0],[8,8],[0,8]] },
+  { "id": "trapezoid_7x6", "name": "Trapezoid (Top 5m, Bottom 7m, Depth 6m)", "polygon": [[0,0],[7,0],[6,6],[1,6]] },
+  { "id": "lshape_8x8_cut", "name": "L-Shape 8m x 8m (Cut 3m x 3m)", "polygon": [[0,0],[8,0],[8,8],[3,8],[3,3],[0,3]] }
+]

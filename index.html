@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Camp Planner 3D v0.1</title>
+  <style>
+    :root{
+      color-scheme: dark;
+      --bg:#0c0f14; --panel:rgba(18,22,30,.88); --text:#e6e9ef; --muted:#a7b0c0;
+      --accent:#6ea8ff; --danger:#ff5c5c; --warn:#ffcc66;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    #app{height:100%;width:100%;position:relative;overflow:hidden}
+    .topbar{
+      position:absolute;left:0;right:0;top:0;z-index:10;
+      display:flex;gap:8px;align-items:center;padding:10px 12px;
+      background:linear-gradient(to bottom, rgba(0,0,0,.65), rgba(0,0,0,0));
+    }
+    .btn{
+      background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);color:var(--text);
+      padding:8px 10px;border-radius:10px;cursor:pointer;touch-action:manipulation;
+    }
+    .btn.primary{border-color:rgba(110,168,255,.5)}
+    .panel{
+      position:absolute;background:var(--panel);border:1px solid rgba(255,255,255,.10);
+      border-radius:14px;padding:12px;backdrop-filter:blur(10px);
+    }
+    .siteList{width:min(560px,calc(100% - 24px));left:12px;right:12px;top:64px;margin:0 auto}
+    .savesList{width:min(720px,calc(100% - 24px));left:12px;right:12px;top:64px;margin:0 auto}
+    .siteItem,.saveItem{
+      padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.05);
+      margin:8px 0;display:flex;justify-content:space-between;align-items:center;gap:12px;
+    }
+    .saveItem{display:grid;grid-template-columns:1fr auto;gap:10px}
+    .small{color:var(--muted);font-size:12px}
+    .canvasWrap{position:absolute;inset:0}
+    canvas{width:100%;height:100%;display:block}
+    .dock{
+      position:absolute;left:12px;right:12px;bottom:12px;z-index:10;
+      display:flex;gap:10px;align-items:center;overflow-x:auto;padding:10px;border-radius:16px;
+      background:rgba(18,22,30,.75);border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(10px);
+    }
+    .chip{
+      white-space:nowrap;padding:10px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
+      background:rgba(255,255,255,.06);cursor:pointer;
+    }
+    .sidebar{right:12px;top:64px;width:min(340px,calc(100% - 24px));z-index:10}
+    .row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:10px 0}
+    label{color:var(--muted);font-size:12px}
+    input[type="range"]{width:170px}
+    .badge{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06)}
+    .badge.ok{border-color:rgba(120,255,160,.35)}
+    .badge.warn{border-color:rgba(255,204,102,.45)}
+    .badge.err{border-color:rgba(255,92,92,.45)}
+    .warnLine{color:var(--warn);font-size:12px;margin:6px 0}
+    .errLine{color:var(--danger);font-size:12px;margin:6px 0}
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Three.js from CDN (no build needed) -->
+<script type="module">
+  import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+  // ---------- storage ----------
+  const KEY = "camp_planner_saves_v01";
+  const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
+  const loadAllSaves = () => {
+    try { const raw = localStorage.getItem(KEY); return raw ? (JSON.parse(raw) || []) : []; } catch { return []; }
+  };
+  const upsertSave = (save) => {
+    const all = loadAllSaves();
+    const idx = all.findIndex(s => s.id === save.id);
+    if (idx >= 0) all[idx] = save; else all.unshift(save);
+    localStorage.setItem(KEY, JSON.stringify(all));
+  };
+  const deleteSave = (id) => {
+    const all = loadAllSaves().filter(s => s.id !== id);
+    localStorage.setItem(KEY, JSON.stringify(all));
+  };
+  const getSave = (id) => loadAllSaves().find(s => s.id === id) || null;
+
+  // ---------- geometry ----------
+  const dot = (a,b)=>a.x*b.x + a.y*b.y;
+  const sub = (a,b)=>({x:a.x-b.x,y:a.y-b.y});
+  const len = (a)=>Math.hypot(a.x,a.y);
+  const norm = (a)=>{ const l=len(a)||1; return {x:a.x/l,y:a.y/l}; };
+  const perp = (a)=>({x:-a.y,y:a.x});
+  const degToRad = (d)=>(d*Math.PI)/180;
+
+  function obbCorners2D(cx, cz, hx, hz, yawRad){
+    const c=Math.cos(yawRad), s=Math.sin(yawRad);
+    const ux={x:c,y:s};
+    const uz={x:-s,y:c};
+    const p1={x:cx+ux.x*hx+uz.x*hz, y:cz+ux.y*hx+uz.y*hz};
+    const p2={x:cx-ux.x*hx+uz.x*hz, y:cz-ux.y*hx+uz.y*hz};
+    const p3={x:cx-ux.x*hx-uz.x*hz, y:cz-ux.y*hx-uz.y*hz};
+    const p4={x:cx+ux.x*hx-uz.x*hz, y:cz+ux.y*hx-uz.y*hz};
+    return [p1,p2,p3,p4];
+  }
+  function project(poly, axis){
+    let min=Infinity,max=-Infinity;
+    for (const p of poly){ const v=dot(p,axis); min=Math.min(min,v); max=Math.max(max,v); }
+    return {min,max};
+  }
+  function overlap(a,b){ return !(a.max<b.min || b.max<a.min); }
+  function obbIntersectsOBB(aCorners,bCorners){
+    const axes=[];
+    for (const poly of [aCorners,bCorners]){
+      for (let i=0;i<4;i++){
+        const p=poly[i], q=poly[(i+1)%4];
+        const edge=sub(q,p);
+        axes.push(norm(perp(edge)));
+      }
+    }
+    for (const axis of axes){
+      if (!overlap(project(aCorners,axis), project(bCorners,axis))) return false;
+    }
+    return true;
+  }
+  function pointInPolygon(x,z,polygon){
+    let inside=false;
+    for (let i=0,j=polygon.length-1;i<polygon.length;j=i++){
+      const xi=polygon[i][0], zi=polygon[i][1];
+      const xj=polygon[j][0], zj=polygon[j][1];
+      const intersect=((zi>z)!==(zj>z)) && (x < (xj-xi)*(z-zi)/(zj-zi+1e-9)+xi);
+      if (intersect) inside=!inside;
+    }
+    return inside;
+  }
+  function obbInsidePolygon(corners, polygon){
+    return corners.every(p => pointInPolygon(p.x, p.y, polygon));
+  }
+
+  // ---------- UI helpers ----------
+  const el = (tag, attrs={}, children=[])=>{
+    const e=document.createElement(tag);
+    for (const [k,v] of Object.entries(attrs)){
+      if (k==="class") e.className=v;
+      else if (k==="html") e.innerHTML=v;
+      else if (k.startsWith("on") && typeof v==="function") e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k, String(v));
+    }
+    for (const c of children) e.append(c);
+    return e;
+  };
+  const clear = (node)=>{ while(node.firstChild) node.removeChild(node.firstChild); };
+  const fmtDate = (ts)=> new Date(ts).toLocaleString();
+
+  // ---------- planner core ----------
+  class PlannerApp{
+    constructor({canvas, sidebar, dock}){
+      this.canvas=canvas; this.sidebar=sidebar; this.dock=dock;
+
+      this.scene=new THREE.Scene();
+      this.scene.background=new THREE.Color(0x0c0f14);
+
+      this.camera=new THREE.PerspectiveCamera(45, 1, 0.01, 200);
+      this.camera.position.set(10,12,10);
+      this.camera.lookAt(0,0,0);
+
+      this.renderer=new THREE.WebGLRenderer({canvas, antialias:true});
+      this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+
+      this.raycaster=new THREE.Raycaster();
+      this.pointer=new THREE.Vector2();
+
+      this.site=null;
+      this.siteMesh=null;
+
+      this.catalog={gear:[], sites:[]};
+
+      this.instances=[];
+      this.selected=null;
+
+      this.ground=new THREE.Mesh(
+        new THREE.PlaneGeometry(200,200),
+        new THREE.MeshStandardMaterial({color:0x141a22, roughness:1, metalness:0})
+      );
+      this.ground.rotation.x=-Math.PI/2;
+      this.ground.position.y=0;
+      this.ground.name="ground";
+      this.scene.add(this.ground);
+
+      this.scene.add(new THREE.HemisphereLight(0xbfd6ff, 0x111a22, 1.1));
+      const dir=new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(8,16,6);
+      this.scene.add(dir);
+
+      this.grid=new THREE.GridHelper(200,200,0x223044,0x1a2432);
+      this.scene.add(this.grid);
+
+      this.fireRings=new Map();
+
+      this.drag={active:false, offset:new THREE.Vector3(), plane:new THREE.Plane(new THREE.Vector3(0,1,0),0)};
+      this._orbitTarget=new THREE.Vector3(1,0,1);
+
+      this._bindEvents();
+      this._resize();
+      addEventListener("resize", ()=>this._resize());
+
+      this._anim();
+    }
+
+    async loadCatalogs(){
+      const [gear, sites] = await Promise.all([
+        fetch("./gear_catalog.json").then(r=>r.json()),
+        fetch("./site_catalog.json").then(r=>r.json())
+      ]);
+      this.catalog.gear=gear;
+      this.catalog.sites=sites;
+    }
+
+    setSite(siteDef){
+      this.site=siteDef;
+      if (this.siteMesh){
+        this.scene.remove(this.siteMesh);
+        this.siteMesh.geometry.dispose();
+        this.siteMesh.material.dispose();
+        this.siteMesh=null;
+      }
+
+      const shape=new THREE.Shape();
+      const pts=siteDef.polygon;
+      shape.moveTo(pts[0][0], pts[0][1]);
+      for (let i=1;i<pts.length;i++) shape.lineTo(pts[i][0], pts[i][1]);
+      shape.lineTo(pts[0][0], pts[0][1]);
+
+      const geom=new THREE.ShapeGeometry(shape);
+      geom.rotateX(-Math.PI/2);
+
+      const mat=new THREE.MeshStandardMaterial({
+        color:0x0f1620, roughness:1, metalness:0, transparent:true, opacity:0.95, side:THREE.DoubleSide
+      });
+
+      this.siteMesh=new THREE.Mesh(geom, mat);
+      this.siteMesh.position.set(0, 0.01, 0);
+      this.scene.add(this.siteMesh);
+
+      const box=new THREE.Box3().setFromObject(this.siteMesh);
+      const center=new THREE.Vector3();
+      box.getCenter(center);
+      this._orbitTarget=center;
+
+      this.camera.position.set(center.x+8, 10, center.z+8);
+      this.camera.lookAt(center);
+
+      this._renderDock();
+      this._revalidateAll();
+      this._renderSidebar();
+    }
+
+    loadFromSave(saveObj){
+      // clear existing
+      for (const inst of this.instances){
+        this.scene.remove(inst.mesh);
+        inst.mesh.geometry.dispose();
+        inst.mesh.material.dispose();
+      }
+      this.instances=[];
+      this.selected=null;
+
+      for (const ring of this.fireRings.values()){
+        this.scene.remove(ring);
+        ring.geometry.dispose();
+        ring.material.dispose();
+      }
+      this.fireRings.clear();
+
+      const site=this.catalog.sites.find(s=>s.id===saveObj.siteId);
+      if (site) this.setSite(site);
+
+      for (const gi of saveObj.instances){
+        const def=this.catalog.gear.find(g=>g.id===gi.definitionId);
+        if (!def) continue;
+        const inst=this._spawn(def, gi.pos.x, gi.pos.z, gi.yaw);
+        inst.instanceId = gi.instanceId || uid();
+      }
+      this._revalidateAll();
+      this._renderSidebar();
+    }
+
+    exportSavePayload(name="Untitled", saveId=null){
+      return {
+        id: saveId || uid(),
+        name,
+        updatedAt: Date.now(),
+        siteId: this.site?.id ?? null,
+        instances: this.instances.map(inst => ({
+          instanceId: inst.instanceId,
+          definitionId: inst.def.id,
+          pos: {x: inst.mesh.position.x, y:0, z: inst.mesh.position.z},
+          yaw: inst.yawDeg
+        }))
+      };
+    }
+
+    _makeFireRing(r){
+      const geom=new THREE.RingGeometry(r-0.03, r+0.03, 64);
+      const mat=new THREE.MeshBasicMaterial({color:0xffcc66, side:THREE.DoubleSide, transparent:true, opacity:0.65});
+      const ring=new THREE.Mesh(geom, mat);
+      ring.rotation.x=-Math.PI/2;
+      return ring;
+    }
+
+    _spawn(def, x=1, z=1, yawDeg=0){
+      const vis=def.visual;
+      const geom=new THREE.BoxGeometry(vis.w, vis.h, vis.d);
+      const mat=new THREE.MeshStandardMaterial({color:0x6ea8ff, roughness:0.9, metalness:0});
+      const mesh=new THREE.Mesh(geom, mat);
+      mesh.position.set(x, vis.h/2, z);
+      mesh.rotation.y=degToRad(yawDeg);
+      mesh.userData={kind:"gear", defId:def.id};
+      this.scene.add(mesh);
+
+      const inst={instanceId: uid(), def, mesh, yawDeg};
+      this.instances.push(inst);
+
+      if (def.category==="fire" && typeof def.fireRadius==="number"){
+        const ring=this._makeFireRing(def.fireRadius);
+        ring.position.set(x,0.02,z);
+        this.scene.add(ring);
+        this.fireRings.set(inst.instanceId, ring);
+      }
+
+      this._select(inst);
+      this._revalidateAll();
+      this._renderSidebar();
+      return inst;
+    }
+
+    _select(inst){
+      if (this.selected?.mesh?.material){
+        this.selected.mesh.material.emissive?.setHex?.(0x000000);
+        this.selected.mesh.material.emissiveIntensity=0;
+      }
+      this.selected=inst;
+      if (inst?.mesh?.material){
+        inst.mesh.material.emissive=new THREE.Color(0x3559aa);
+        inst.mesh.material.emissiveIntensity=0.35;
+      }
+    }
+
+    _deleteSelected(){
+      if (!this.selected) return;
+      const id=this.selected.instanceId;
+
+      const idx=this.instances.findIndex(x=>x.instanceId===id);
+      if (idx>=0) this.instances.splice(idx,1);
+
+      this.scene.remove(this.selected.mesh);
+      this.selected.mesh.geometry.dispose();
+      this.selected.mesh.material.dispose();
+
+      const ring=this.fireRings.get(id);
+      if (ring){
+        this.scene.remove(ring);
+        ring.geometry.dispose();
+        ring.material.dispose();
+        this.fireRings.delete(id);
+      }
+
+      this.selected=null;
+      this._revalidateAll();
+      this._renderSidebar();
+    }
+
+    _renderDock(){
+      this.dock.innerHTML="";
+      for (const g of this.catalog.gear){
+        const chip=el("button",{class:"chip"},[g.name]);
+        chip.addEventListener("click", ()=>{
+          const c=this._orbitTarget || new THREE.Vector3(1,0,1);
+          this._spawn(g, c.x+0.5, c.z+0.5, 0);
+        });
+        this.dock.appendChild(chip);
+      }
+    }
+
+    _currentStatus(){
+      const issues=this._issues||[];
+      if (issues.some(i=>i.level==="err")) return {level:"err", summary:"Fix errors (overlap/out of bounds)."};
+      if (issues.some(i=>i.level==="warn")) return {level:"warn", summary:"Warnings present (fire safety)."};
+      return {level:"ok", summary:"Looks placeable."};
+    }
+
+    _issuesForInstance(id){
+      return (this._issues||[]).filter(x=>x.targetId===id);
+    }
+
+    _renderSidebar(){
+      const s=this.sidebar; s.innerHTML="";
+
+      const head=el("div",{},[]);
+      head.innerHTML = `<div style="font-weight:700;">Editor</div><div class="small">${this.site ? this.site.name : "No site selected"}</div>`;
+      s.appendChild(head);
+
+      const status=this._currentStatus();
+      const row=el("div",{class:"row"},[]);
+      const badge=el("span",{class:"badge "+(status.level==="ok"?"ok":status.level==="warn"?"warn":"err")},[status.level.toUpperCase()]);
+      const msg=el("span",{class:"small"},[status.summary]);
+      row.append(badge,msg);
+      s.appendChild(row);
+
+      if (!this.selected){
+        s.appendChild(el("div",{class:"small", style:"margin-top:10px;"},["Tap a box to select. Drag to move. Rotate slider on right panel."]));
+        return;
+      }
+
+      const sel=this.selected;
+      const selRow=el("div",{class:"row"},[]);
+      selRow.appendChild(el("div",{html:`<div style="font-weight:600;">${sel.def.name}</div><div class="small">${sel.def.id}</div>`}));
+
+      const delBtn=el("button",{class:"btn", onclick:()=>this._deleteSelected()},["Delete"]);
+      selRow.appendChild(delBtn);
+      s.appendChild(selRow);
+
+      const rRow=el("div",{class:"row"},[]);
+      rRow.appendChild(el("label",{},["Rotate"]));
+      const range=el("input",{type:"range", min:"0", max:"359", value:String(sel.yawDeg)});
+      range.addEventListener("input", ()=>{
+        sel.yawDeg = Number(range.value);
+        sel.mesh.rotation.y = degToRad(sel.yawDeg);
+        const ring=this.fireRings.get(sel.instanceId);
+        if (ring) ring.position.set(sel.mesh.position.x,0.02,sel.mesh.position.z);
+        this._revalidateAll();
+        this._renderSidebar();
+      });
+      rRow.appendChild(range);
+      s.appendChild(rRow);
+
+      const issues=this._issuesForInstance(sel.instanceId);
+      for (const it of issues){
+        s.appendChild(el("div",{class: it.level==="err" ? "errLine":"warnLine"},[(it.level==="err"?"✖ ":"⚠ ")+it.message]));
+      }
+      if (issues.length===0){
+        s.appendChild(el("div",{class:"small", style:"margin-top:8px;"},["No issues for selected item."]));
+      }
+    }
+
+    _revalidateAll(){
+      const issues=[];
+      const sitePoly=this.site?.polygon||[];
+
+      const rects=this.instances.map(inst=>{
+        const vis=inst.def.visual;
+        let w=vis.w, d=vis.d;
+        // v0.1: tents include guyline clearance as collision envelope
+        if (inst.def.category==="tent" && inst.def.clearance?.[0]?.shape==="rect"){
+          w=Math.max(w, inst.def.clearance[0].w);
+          d=Math.max(d, inst.def.clearance[0].d);
+        }
+        const hx=w/2, hz=d/2;
+        const yaw=degToRad(inst.yawDeg);
+        const cx=inst.mesh.position.x;
+        const cz=inst.mesh.position.z;
+        const corners=obbCorners2D(cx, cz, hx, hz, yaw);
+        return {inst, corners};
+      });
+
+      // out of bounds
+      for (const r of rects){
+        if (sitePoly.length>=3 && !obbInsidePolygon(r.corners, sitePoly)){
+          issues.push({level:"err", targetId:r.inst.instanceId, message:"Out of bounds (outside site)."});
+        }
+      }
+
+      // collisions
+      for (let i=0;i<rects.length;i++){
+        for (let j=i+1;j<rects.length;j++){
+          const a=rects[i], b=rects[j];
+          if (obbIntersectsOBB(a.corners, b.corners)){
+            issues.push({level:"err", targetId:a.inst.instanceId, message:`Overlaps with ${b.inst.def.name}.`});
+            issues.push({level:"err", targetId:b.inst.instanceId, message:`Overlaps with ${a.inst.def.name}.`});
+          }
+        }
+      }
+
+      // fire warnings: tent/tarp in radius
+      const fires=this.instances.filter(x=>x.def.category==="fire" && typeof x.def.fireRadius==="number");
+      for (const fire of fires){
+        const r=fire.def.fireRadius;
+        const fx=fire.mesh.position.x, fz=fire.mesh.position.z;
+        for (const inst of this.instances){
+          if (inst.instanceId===fire.instanceId) continue;
+          if (!(inst.def.category==="tent" || inst.def.category==="tarp")) continue;
+          const dist=Math.hypot(inst.mesh.position.x-fx, inst.mesh.position.z-fz);
+          if (dist < r){
+            issues.push({level:"warn", targetId:inst.instanceId, message:`Too close to fire pit (< ${r.toFixed(1)}m).`});
+          }
+        }
+      }
+
+      const errSet=new Set(issues.filter(i=>i.level==="err").map(i=>i.targetId));
+      const warnSet=new Set(issues.filter(i=>i.level==="warn").map(i=>i.targetId));
+      for (const inst of this.instances){
+        const mat=inst.mesh.material;
+        if (errSet.has(inst.instanceId)) mat.color.setHex(0xff5c5c);
+        else if (warnSet.has(inst.instanceId)) mat.color.setHex(0xffcc66);
+        else mat.color.setHex(0x6ea8ff);
+
+        const ring=this.fireRings.get(inst.instanceId);
+        if (ring) ring.position.set(inst.mesh.position.x,0.02,inst.mesh.position.z);
+      }
+
+      this._issues=issues;
+    }
+
+    _bindEvents(){
+      const getPointer = (ev)=>{
+        const rect=this.canvas.getBoundingClientRect();
+        const p = ev.touches?.[0] || ev;
+        this.pointer.x = ((p.clientX-rect.left)/rect.width)*2 - 1;
+        this.pointer.y = -(((p.clientY-rect.top)/rect.height)*2 - 1);
+      };
+
+      const pick = (ev)=>{
+        getPointer(ev);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const hits=this.raycaster.intersectObjects(this.instances.map(i=>i.mesh), false);
+        if (hits.length){
+          const mesh=hits[0].object;
+          return this.instances.find(i=>i.mesh===mesh) || null;
+        }
+        return null;
+      };
+
+      const intersectGround = (ev)=>{
+        getPointer(ev);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const hit=new THREE.Vector3();
+        this.raycaster.ray.intersectPlane(this.drag.plane, hit);
+        return hit;
+      };
+
+      const onDown = (ev)=>{
+        ev.preventDefault?.();
+        const inst=pick(ev);
+        if (inst){
+          this._select(inst);
+          const hit=intersectGround(ev);
+          this.drag.active=true;
+          this.drag.offset.copy(inst.mesh.position).sub(hit);
+          this._renderSidebar();
+        } else {
+          const p = ev.touches?.[0] || ev;
+          this._orbitDrag={active:true, x:p.clientX, y:p.clientY};
+        }
+      };
+
+      const onMove = (ev)=>{
+        if (this.drag.active && this.selected){
+          ev.preventDefault?.();
+          const hit=intersectGround(ev);
+          const pos=hit.add(this.drag.offset);
+          this.selected.mesh.position.x=pos.x;
+          this.selected.mesh.position.z=pos.z;
+
+          const ring=this.fireRings.get(this.selected.instanceId);
+          if (ring) ring.position.set(pos.x,0.02,pos.z);
+
+          this._revalidateAll();
+          this._renderSidebar();
+          return;
+        }
+        if (this._orbitDrag?.active){
+          const p = ev.touches?.[0] || ev;
+          const dx=(p.clientX-this._orbitDrag.x)*0.01;
+          const dy=(p.clientY-this._orbitDrag.y)*0.01;
+          this._orbitDrag.x=p.clientX;
+          this._orbitDrag.y=p.clientY;
+
+          const target=this._orbitTarget || new THREE.Vector3(0,0,0);
+          const offset=this.camera.position.clone().sub(target);
+          const sph=new THREE.Spherical().setFromVector3(offset);
+          sph.theta -= dx;
+          sph.phi = Math.min(Math.max(0.2, sph.phi + dy), 1.45);
+          offset.setFromSpherical(sph);
+          this.camera.position.copy(target.clone().add(offset));
+          this.camera.lookAt(target);
+        }
+      };
+
+      const onUp = ()=>{
+        this.drag.active=false;
+        if (this._orbitDrag) this._orbitDrag.active=false;
+      };
+
+      const onWheel = (ev)=>{
+        ev.preventDefault();
+        const target=this._orbitTarget || new THREE.Vector3(0,0,0);
+        const dir=this.camera.position.clone().sub(target);
+        const l=dir.length();
+        const nl=Math.min(Math.max(4, l + ev.deltaY*0.01), 40);
+        dir.setLength(nl);
+        this.camera.position.copy(target.clone().add(dir));
+        this.camera.lookAt(target);
+      };
+
+      this.canvas.addEventListener("mousedown", onDown, {passive:false});
+      this.canvas.addEventListener("mousemove", onMove, {passive:false});
+      addEventListener("mouseup", onUp, {passive:true});
+
+      this.canvas.addEventListener("touchstart", onDown, {passive:false});
+      this.canvas.addEventListener("touchmove", onMove, {passive:false});
+      addEventListener("touchend", onUp, {passive:true});
+
+      this.canvas.addEventListener("wheel", onWheel, {passive:false});
+    }
+
+    _resize(){
+      const w=this.canvas.clientWidth;
+      const h=this.canvas.clientHeight;
+      this.camera.aspect=w/h;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(w,h,false);
+    }
+
+    _anim(){
+      requestAnimationFrame(()=>this._anim());
+      this.renderer.render(this.scene, this.camera);
+    }
+  }
+
+  // ---------- screens ----------
+  const appRoot=document.getElementById("app");
+  const state={ planner:null, currentSiteId:null, currentSaveId:null };
+
+  async function ensurePlannerUI(){
+    if (state.planner) return state.planner;
+
+    clear(appRoot);
+    const canvasWrap=el("div",{class:"canvasWrap"},[el("canvas",{id:"canvas"})]);
+    const topbar=el("div",{class:"topbar"},[]);
+    const sidebar=el("div",{class:"panel sidebar"},[]);
+    const dock=el("div",{class:"dock"},[]);
+    appRoot.append(canvasWrap, topbar, sidebar, dock);
+
+    const planner=new PlannerApp({canvas:document.getElementById("canvas"), sidebar, dock});
+    await planner.loadCatalogs();
+    state.planner=planner;
+
+    // topbar buttons
+    topbar.append(
+      el("button",{class:"btn", onclick:()=>location.hash="#sites"},["Sites"]),
+      el("button",{class:"btn", onclick:()=>location.hash="#saves"},["Saves"]),
+      el("button",{class:"btn primary", onclick:()=>{
+        const name = prompt("Save name?", "My Camp Plan");
+        if (!name) return;
+        const payload = planner.exportSavePayload(name, state.currentSaveId || null);
+        upsertSave(payload);
+        state.currentSaveId = payload.id;
+        alert("Saved.");
+      }},["Save"])
+    );
+
+    return planner;
+  }
+
+  function renderSites(){
+    clear(appRoot);
+    const topbar=el("div",{class:"topbar"},[
+      el("div",{class:"small", html:"<b>Camp Planner 3D</b> · v0.1 (no build, GitHub Pages friendly)"})
+    ]);
+    const panel=el("div",{class:"panel siteList"},[
+      el("div",{style:"font-weight:700; font-size:16px;"},["Select a Site"])
+    ]);
+    appRoot.append(topbar, panel);
+
+    ensurePlannerUI().then(planner=>{
+      // reset to sites UI
+      clear(appRoot);
+      appRoot.append(topbar, panel);
+
+      for (const s of planner.catalog.sites){
+        panel.appendChild(el("div",{class:"siteItem"},[
+          el("div",{},[
+            el("div",{style:"font-weight:600;"},[s.name]),
+            el("div",{class:"small"},[`Polygon points: ${s.polygon.length}`])
+          ]),
+          el("button",{class:"btn primary", onclick:()=>{
+            state.currentSiteId=s.id;
+            state.currentSaveId=null;
+            location.hash="#edit";
+          }},["Edit"])
+        ]));
+      }
+    });
+  }
+
+  async function renderEditor(){
+    const planner = await ensurePlannerUI();
+
+    if (state.currentSaveId){
+      const save=getSave(state.currentSaveId);
+      if (save) planner.loadFromSave(save);
+      return;
+    }
+
+    if (!state.currentSiteId){
+      state.currentSiteId = planner.catalog.sites[0]?.id ?? null;
+    }
+    const site = planner.catalog.sites.find(s=>s.id===state.currentSiteId);
+    if (site) planner.setSite(site);
+  }
+
+  function renderSaves(){
+    clear(appRoot);
+    const topbar=el("div",{class:"topbar"},[
+      el("button",{class:"btn", onclick:()=>location.hash="#sites"},["Sites"]),
+      el("button",{class:"btn", onclick:()=>location.hash="#edit"},["Editor"])
+    ]);
+    const panel=el("div",{class:"panel savesList"},[
+      el("div",{style:"font-weight:700; font-size:16px;"},["Saved Plans"]),
+      el("div",{class:"small"},["Stored per-device in localStorage (v0.1)."])
+    ]);
+
+    const all=loadAllSaves();
+    if (!all.length){
+      panel.appendChild(el("div",{class:"small", style:"margin-top:10px;"},["No saves yet."]));
+    } else {
+      for (const s of all){
+        panel.appendChild(el("div",{class:"saveItem"},[
+          el("div",{},[
+            el("div",{style:"font-weight:600;"},[s.name || "Untitled"]),
+            el("div",{class:"small"},[`Updated: ${fmtDate(s.updatedAt)} · Site: ${s.siteId}`])
+          ]),
+          el("div",{style:"display:flex; gap:8px; align-items:center;"},[
+            el("button",{class:"btn primary", onclick:()=>{
+              state.currentSaveId=s.id;
+              state.currentSiteId=s.siteId;
+              location.hash="#edit";
+            }},["Open"]),
+            el("button",{class:"btn", onclick:()=>{
+              if (confirm("Delete this save?")){
+                deleteSave(s.id);
+                renderSaves();
+              }
+            }},["Delete"])
+          ])
+        ]));
+      }
+    }
+
+    appRoot.append(topbar, panel);
+  }
+
+  function route(){
+    const hash=location.hash || "#sites";
+    if (hash.startsWith("#edit")) renderEditor();
+    else if (hash.startsWith("#saves")) renderSaves();
+    else renderSites();
+  }
+  addEventListener("hashchange", route);
+  route();
+</script>
+</body>
+</html>
