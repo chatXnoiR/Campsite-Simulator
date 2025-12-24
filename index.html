@@ -61,7 +61,6 @@
 <body>
 <div id="app"></div>
 
-<!-- Three.js from CDN (no build needed) -->
 <script type="module">
   import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 
@@ -83,7 +82,7 @@
   };
   const getSave = (id) => loadAllSaves().find(s => s.id === id) || null;
 
-  // ---------- geometry ----------
+  // ---------- geometry (2D XZ) ----------
   const dot = (a,b)=>a.x*b.x + a.y*b.y;
   const sub = (a,b)=>({x:a.x-b.x,y:a.y-b.y});
   const len = (a)=>Math.hypot(a.x,a.y);
@@ -95,11 +94,12 @@
     const c=Math.cos(yawRad), s=Math.sin(yawRad);
     const ux={x:c,y:s};
     const uz={x:-s,y:c};
-    const p1={x:cx+ux.x*hx+uz.x*hz, y:cz+ux.y*hx+uz.y*hz};
-    const p2={x:cx-ux.x*hx+uz.x*hz, y:cz-ux.y*hx+uz.y*hz};
-    const p3={x:cx-ux.x*hx-uz.x*hz, y:cz-ux.y*hx-uz.y*hz};
-    const p4={x:cx+ux.x*hx-uz.x*hz, y:cz+ux.y*hx-uz.y*hz};
-    return [p1,p2,p3,p4];
+    return [
+      {x:cx+ux.x*hx+uz.x*hz, y:cz+ux.y*hx+uz.y*hz},
+      {x:cx-ux.x*hx+uz.x*hz, y:cz-ux.y*hx+uz.y*hz},
+      {x:cx-ux.x*hx-uz.x*hz, y:cz-ux.y*hx-uz.y*hz},
+      {x:cx+ux.x*hx-uz.x*hz, y:cz+ux.y*hx-uz.y*hz}
+    ];
   }
   function project(poly, axis){
     let min=Infinity,max=-Infinity;
@@ -112,8 +112,7 @@
     for (const poly of [aCorners,bCorners]){
       for (let i=0;i<4;i++){
         const p=poly[i], q=poly[(i+1)%4];
-        const edge=sub(q,p);
-        axes.push(norm(perp(edge)));
+        axes.push(norm(perp(sub(q,p))));
       }
     }
     for (const axis of axes){
@@ -150,10 +149,25 @@
   const clear = (node)=>{ while(node.firstChild) node.removeChild(node.firstChild); };
   const fmtDate = (ts)=> new Date(ts).toLocaleString();
 
-  // ---------- planner core ----------
+  // ---------- catalogs (IMPORTANT FIX: load without creating planner) ----------
+  const catalogs = { loaded:false, gear:null, sites:null };
+  async function loadCatalogsIfNeeded(){
+    if (catalogs.loaded) return catalogs;
+    const [gear, sites] = await Promise.all([
+      fetch("./gear_catalog.json").then(r=>r.json()),
+      fetch("./site_catalog.json").then(r=>r.json())
+    ]);
+    catalogs.gear = gear;
+    catalogs.sites = sites;
+    catalogs.loaded = true;
+    return catalogs;
+  }
+
+  // ---------- planner ----------
   class PlannerApp{
-    constructor({canvas, sidebar, dock}){
+    constructor({canvas, sidebar, dock, gear, sites}){
       this.canvas=canvas; this.sidebar=sidebar; this.dock=dock;
+      this.catalog={gear, sites};
 
       this.scene=new THREE.Scene();
       this.scene.background=new THREE.Color(0x0c0f14);
@@ -171,27 +185,21 @@
       this.site=null;
       this.siteMesh=null;
 
-      this.catalog={gear:[], sites:[]};
-
       this.instances=[];
       this.selected=null;
 
-      this.ground=new THREE.Mesh(
+      this.scene.add(new THREE.Mesh(
         new THREE.PlaneGeometry(200,200),
         new THREE.MeshStandardMaterial({color:0x141a22, roughness:1, metalness:0})
-      );
-      this.ground.rotation.x=-Math.PI/2;
-      this.ground.position.y=0;
-      this.ground.name="ground";
-      this.scene.add(this.ground);
+      ));
+      this.scene.children[this.scene.children.length-1].rotation.x=-Math.PI/2;
 
       this.scene.add(new THREE.HemisphereLight(0xbfd6ff, 0x111a22, 1.1));
       const dir=new THREE.DirectionalLight(0xffffff, 0.6);
       dir.position.set(8,16,6);
       this.scene.add(dir);
 
-      this.grid=new THREE.GridHelper(200,200,0x223044,0x1a2432);
-      this.scene.add(this.grid);
+      this.scene.add(new THREE.GridHelper(200,200,0x223044,0x1a2432));
 
       this.fireRings=new Map();
 
@@ -203,15 +211,6 @@
       addEventListener("resize", ()=>this._resize());
 
       this._anim();
-    }
-
-    async loadCatalogs(){
-      const [gear, sites] = await Promise.all([
-        fetch("./gear_catalog.json").then(r=>r.json()),
-        fetch("./site_catalog.json").then(r=>r.json())
-      ]);
-      this.catalog.gear=gear;
-      this.catalog.sites=sites;
     }
 
     setSite(siteDef){
@@ -231,18 +230,15 @@
 
       const geom=new THREE.ShapeGeometry(shape);
       geom.rotateX(-Math.PI/2);
-
       const mat=new THREE.MeshStandardMaterial({
         color:0x0f1620, roughness:1, metalness:0, transparent:true, opacity:0.95, side:THREE.DoubleSide
       });
-
       this.siteMesh=new THREE.Mesh(geom, mat);
-      this.siteMesh.position.set(0, 0.01, 0);
+      this.siteMesh.position.set(0,0.01,0);
       this.scene.add(this.siteMesh);
 
       const box=new THREE.Box3().setFromObject(this.siteMesh);
-      const center=new THREE.Vector3();
-      box.getCenter(center);
+      const center=new THREE.Vector3(); box.getCenter(center);
       this._orbitTarget=center;
 
       this.camera.position.set(center.x+8, 10, center.z+8);
@@ -254,7 +250,6 @@
     }
 
     loadFromSave(saveObj){
-      // clear existing
       for (const inst of this.instances){
         this.scene.remove(inst.mesh);
         inst.mesh.geometry.dispose();
@@ -313,7 +308,6 @@
       const mesh=new THREE.Mesh(geom, mat);
       mesh.position.set(x, vis.h/2, z);
       mesh.rotation.y=degToRad(yawDeg);
-      mesh.userData={kind:"gear", defId:def.id};
       this.scene.add(mesh);
 
       const inst={instanceId: uid(), def, mesh, yawDeg};
@@ -393,16 +387,14 @@
 
     _renderSidebar(){
       const s=this.sidebar; s.innerHTML="";
-
-      const head=el("div",{},[]);
-      head.innerHTML = `<div style="font-weight:700;">Editor</div><div class="small">${this.site ? this.site.name : "No site selected"}</div>`;
-      s.appendChild(head);
+      s.appendChild(el("div",{html:`<div style="font-weight:700;">Editor</div><div class="small">${this.site ? this.site.name : "No site selected"}</div>`}));
 
       const status=this._currentStatus();
       const row=el("div",{class:"row"},[]);
-      const badge=el("span",{class:"badge "+(status.level==="ok"?"ok":status.level==="warn"?"warn":"err")},[status.level.toUpperCase()]);
-      const msg=el("span",{class:"small"},[status.summary]);
-      row.append(badge,msg);
+      row.append(
+        el("span",{class:"badge "+(status.level==="ok"?"ok":status.level==="warn"?"warn":"err")},[status.level.toUpperCase()]),
+        el("span",{class:"small"},[status.summary])
+      );
       s.appendChild(row);
 
       if (!this.selected){
@@ -413,9 +405,7 @@
       const sel=this.selected;
       const selRow=el("div",{class:"row"},[]);
       selRow.appendChild(el("div",{html:`<div style="font-weight:600;">${sel.def.name}</div><div class="small">${sel.def.id}</div>`}));
-
-      const delBtn=el("button",{class:"btn", onclick:()=>this._deleteSelected()},["Delete"]);
-      selRow.appendChild(delBtn);
+      selRow.appendChild(el("button",{class:"btn", onclick:()=>this._deleteSelected()},["Delete"]));
       s.appendChild(selRow);
 
       const rRow=el("div",{class:"row"},[]);
@@ -426,8 +416,7 @@
         sel.mesh.rotation.y = degToRad(sel.yawDeg);
         const ring=this.fireRings.get(sel.instanceId);
         if (ring) ring.position.set(sel.mesh.position.x,0.02,sel.mesh.position.z);
-        this._revalidateAll();
-        this._renderSidebar();
+        this._revalidateAll(); this._renderSidebar();
       });
       rRow.appendChild(range);
       s.appendChild(rRow);
@@ -436,7 +425,7 @@
       for (const it of issues){
         s.appendChild(el("div",{class: it.level==="err" ? "errLine":"warnLine"},[(it.level==="err"?"✖ ":"⚠ ")+it.message]));
       }
-      if (issues.length===0){
+      if (!issues.length){
         s.appendChild(el("div",{class:"small", style:"margin-top:8px;"},["No issues for selected item."]));
       }
     }
@@ -448,38 +437,29 @@
       const rects=this.instances.map(inst=>{
         const vis=inst.def.visual;
         let w=vis.w, d=vis.d;
-        // v0.1: tents include guyline clearance as collision envelope
         if (inst.def.category==="tent" && inst.def.clearance?.[0]?.shape==="rect"){
           w=Math.max(w, inst.def.clearance[0].w);
           d=Math.max(d, inst.def.clearance[0].d);
         }
-        const hx=w/2, hz=d/2;
-        const yaw=degToRad(inst.yawDeg);
-        const cx=inst.mesh.position.x;
-        const cz=inst.mesh.position.z;
-        const corners=obbCorners2D(cx, cz, hx, hz, yaw);
+        const corners=obbCorners2D(inst.mesh.position.x, inst.mesh.position.z, w/2, d/2, degToRad(inst.yawDeg));
         return {inst, corners};
       });
 
-      // out of bounds
       for (const r of rects){
         if (sitePoly.length>=3 && !obbInsidePolygon(r.corners, sitePoly)){
           issues.push({level:"err", targetId:r.inst.instanceId, message:"Out of bounds (outside site)."});
         }
       }
 
-      // collisions
       for (let i=0;i<rects.length;i++){
         for (let j=i+1;j<rects.length;j++){
-          const a=rects[i], b=rects[j];
-          if (obbIntersectsOBB(a.corners, b.corners)){
-            issues.push({level:"err", targetId:a.inst.instanceId, message:`Overlaps with ${b.inst.def.name}.`});
-            issues.push({level:"err", targetId:b.inst.instanceId, message:`Overlaps with ${a.inst.def.name}.`});
+          if (obbIntersectsOBB(rects[i].corners, rects[j].corners)){
+            issues.push({level:"err", targetId:rects[i].inst.instanceId, message:`Overlaps with ${rects[j].inst.def.name}.`});
+            issues.push({level:"err", targetId:rects[j].inst.instanceId, message:`Overlaps with ${rects[i].inst.def.name}.`});
           }
         }
       }
 
-      // fire warnings: tent/tarp in radius
       const fires=this.instances.filter(x=>x.def.category==="fire" && typeof x.def.fireRadius==="number");
       for (const fire of fires){
         const r=fire.def.fireRadius;
@@ -505,7 +485,6 @@
         const ring=this.fireRings.get(inst.instanceId);
         if (ring) ring.position.set(inst.mesh.position.x,0.02,inst.mesh.position.z);
       }
-
       this._issues=issues;
     }
 
@@ -516,18 +495,12 @@
         this.pointer.x = ((p.clientX-rect.left)/rect.width)*2 - 1;
         this.pointer.y = -(((p.clientY-rect.top)/rect.height)*2 - 1);
       };
-
       const pick = (ev)=>{
         getPointer(ev);
         this.raycaster.setFromCamera(this.pointer, this.camera);
         const hits=this.raycaster.intersectObjects(this.instances.map(i=>i.mesh), false);
-        if (hits.length){
-          const mesh=hits[0].object;
-          return this.instances.find(i=>i.mesh===mesh) || null;
-        }
-        return null;
+        return hits.length ? (this.instances.find(i=>i.mesh===hits[0].object) || null) : null;
       };
-
       const intersectGround = (ev)=>{
         getPointer(ev);
         this.raycaster.setFromCamera(this.pointer, this.camera);
@@ -550,7 +523,6 @@
           this._orbitDrag={active:true, x:p.clientX, y:p.clientY};
         }
       };
-
       const onMove = (ev)=>{
         if (this.drag.active && this.selected){
           ev.preventDefault?.();
@@ -558,20 +530,16 @@
           const pos=hit.add(this.drag.offset);
           this.selected.mesh.position.x=pos.x;
           this.selected.mesh.position.z=pos.z;
-
           const ring=this.fireRings.get(this.selected.instanceId);
           if (ring) ring.position.set(pos.x,0.02,pos.z);
-
-          this._revalidateAll();
-          this._renderSidebar();
+          this._revalidateAll(); this._renderSidebar();
           return;
         }
         if (this._orbitDrag?.active){
           const p = ev.touches?.[0] || ev;
           const dx=(p.clientX-this._orbitDrag.x)*0.01;
           const dy=(p.clientY-this._orbitDrag.y)*0.01;
-          this._orbitDrag.x=p.clientX;
-          this._orbitDrag.y=p.clientY;
+          this._orbitDrag.x=p.clientX; this._orbitDrag.y=p.clientY;
 
           const target=this._orbitTarget || new THREE.Vector3(0,0,0);
           const offset=this.camera.position.clone().sub(target);
@@ -583,21 +551,9 @@
           this.camera.lookAt(target);
         }
       };
-
       const onUp = ()=>{
         this.drag.active=false;
         if (this._orbitDrag) this._orbitDrag.active=false;
-      };
-
-      const onWheel = (ev)=>{
-        ev.preventDefault();
-        const target=this._orbitTarget || new THREE.Vector3(0,0,0);
-        const dir=this.camera.position.clone().sub(target);
-        const l=dir.length();
-        const nl=Math.min(Math.max(4, l + ev.deltaY*0.01), 40);
-        dir.setLength(nl);
-        this.camera.position.copy(target.clone().add(dir));
-        this.camera.lookAt(target);
       };
 
       this.canvas.addEventListener("mousedown", onDown, {passive:false});
@@ -607,8 +563,6 @@
       this.canvas.addEventListener("touchstart", onDown, {passive:false});
       this.canvas.addEventListener("touchmove", onMove, {passive:false});
       addEventListener("touchend", onUp, {passive:true});
-
-      this.canvas.addEventListener("wheel", onWheel, {passive:false});
     }
 
     _resize(){
@@ -618,19 +572,18 @@
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w,h,false);
     }
-
     _anim(){
       requestAnimationFrame(()=>this._anim());
       this.renderer.render(this.scene, this.camera);
     }
   }
 
-  // ---------- screens ----------
+  // ---------- app/router ----------
   const appRoot=document.getElementById("app");
   const state={ planner:null, currentSiteId:null, currentSaveId:null };
 
-  async function ensurePlannerUI(){
-    if (state.planner) return state.planner;
+  async function mountEditor(){
+    const {gear, sites} = await loadCatalogsIfNeeded();
 
     clear(appRoot);
     const canvasWrap=el("div",{class:"canvasWrap"},[el("canvas",{id:"canvas"})]);
@@ -639,28 +592,40 @@
     const dock=el("div",{class:"dock"},[]);
     appRoot.append(canvasWrap, topbar, sidebar, dock);
 
-    const planner=new PlannerApp({canvas:document.getElementById("canvas"), sidebar, dock});
-    await planner.loadCatalogs();
-    state.planner=planner;
+    // Always create planner when entering editor (simple and reliable)
+    state.planner = new PlannerApp({
+      canvas: document.getElementById("canvas"),
+      sidebar, dock, gear, sites
+    });
 
-    // topbar buttons
     topbar.append(
       el("button",{class:"btn", onclick:()=>location.hash="#sites"},["Sites"]),
       el("button",{class:"btn", onclick:()=>location.hash="#saves"},["Saves"]),
       el("button",{class:"btn primary", onclick:()=>{
         const name = prompt("Save name?", "My Camp Plan");
         if (!name) return;
-        const payload = planner.exportSavePayload(name, state.currentSaveId || null);
+        const payload = state.planner.exportSavePayload(name, state.currentSaveId || null);
         upsertSave(payload);
         state.currentSaveId = payload.id;
         alert("Saved.");
       }},["Save"])
     );
 
-    return planner;
+    // load context
+    if (state.currentSaveId){
+      const save=getSave(state.currentSaveId);
+      if (save) state.planner.loadFromSave(save);
+      return;
+    }
+
+    if (!state.currentSiteId) state.currentSiteId = sites[0]?.id ?? null;
+    const site = sites.find(s=>s.id===state.currentSiteId);
+    if (site) state.planner.setSite(site);
   }
 
-  function renderSites(){
+  async function renderSites(){
+    const {sites} = await loadCatalogsIfNeeded();
+
     clear(appRoot);
     const topbar=el("div",{class:"topbar"},[
       el("div",{class:"small", html:"<b>Camp Planner 3D</b> · v0.1 (no build, GitHub Pages friendly)"})
@@ -670,41 +635,19 @@
     ]);
     appRoot.append(topbar, panel);
 
-    ensurePlannerUI().then(planner=>{
-      // reset to sites UI
-      clear(appRoot);
-      appRoot.append(topbar, panel);
-
-      for (const s of planner.catalog.sites){
-        panel.appendChild(el("div",{class:"siteItem"},[
-          el("div",{},[
-            el("div",{style:"font-weight:600;"},[s.name]),
-            el("div",{class:"small"},[`Polygon points: ${s.polygon.length}`])
-          ]),
-          el("button",{class:"btn primary", onclick:()=>{
-            state.currentSiteId=s.id;
-            state.currentSaveId=null;
-            location.hash="#edit";
-          }},["Edit"])
-        ]));
-      }
-    });
-  }
-
-  async function renderEditor(){
-    const planner = await ensurePlannerUI();
-
-    if (state.currentSaveId){
-      const save=getSave(state.currentSaveId);
-      if (save) planner.loadFromSave(save);
-      return;
+    for (const s of sites){
+      panel.appendChild(el("div",{class:"siteItem"},[
+        el("div",{},[
+          el("div",{style:"font-weight:600;"},[s.name]),
+          el("div",{class:"small"},[`Polygon points: ${s.polygon.length}`])
+        ]),
+        el("button",{class:"btn primary", onclick:()=>{
+          state.currentSiteId=s.id;
+          state.currentSaveId=null;
+          location.hash="#edit";
+        }},["Edit"])
+      ]));
     }
-
-    if (!state.currentSiteId){
-      state.currentSiteId = planner.catalog.sites[0]?.id ?? null;
-    }
-    const site = planner.catalog.sites.find(s=>s.id===state.currentSiteId);
-    if (site) planner.setSite(site);
   }
 
   function renderSaves(){
@@ -748,11 +691,11 @@
     appRoot.append(topbar, panel);
   }
 
-  function route(){
+  async function route(){
     const hash=location.hash || "#sites";
-    if (hash.startsWith("#edit")) renderEditor();
+    if (hash.startsWith("#edit")) await mountEditor();
     else if (hash.startsWith("#saves")) renderSaves();
-    else renderSites();
+    else await renderSites();
   }
   addEventListener("hashchange", route);
   route();
